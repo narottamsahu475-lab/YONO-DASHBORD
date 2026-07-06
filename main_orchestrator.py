@@ -333,7 +333,7 @@ async def process_single_registration():
         success_chains_count += 1
         await asyncio.sleep(2) 
         
-        other_games = ["mbmbet_game", "yonoslot_game", "789jackpot_game", "spincrush_game", "hirummy_game", "Yonogame_game", "indslot_game"]
+        other_games = ["mbmbet_game", "yonoslot_game", "789jackpot_game", "spincrush_game", "hirummy_game", "Yonogame_game"]
         for game in other_games:
             sub_res, s_otp_flag = await run_game_step_async(phone, txn_id, game, used_otps, is_sub_game=True)
             if s_otp_flag: otp_received_anywhere = True

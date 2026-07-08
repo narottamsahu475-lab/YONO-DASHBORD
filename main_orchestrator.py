@@ -24,7 +24,7 @@ app.add_middleware(
 )
 
 # --- GLOBAL TRACKING STATES ---
-FOUR_SIM_API_KEY = "12b75fd7d823107676094a9aa8cd3ccc"
+FOUR_SIM_API_KEY = "6788f58a862c093c2167b7e57d62e122"
 PANTHERS_API_KEY = "panthers_59T9iL6hei22g7W_uPij_k56ncRBG8nEW8mY6Q"
 BASE_URL = "https://panthers.accbazaar.shop"
 HEADERS = {"X-API-Key": PANTHERS_API_KEY, "Content-Type": "application/json"}

@@ -10,7 +10,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# --- BASE DIRECTORY CONFIGURATION ---
 BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI()
@@ -29,8 +28,23 @@ PANTHERS_API_KEY = "panthers_59T9iL6hei22g7W_uPij_k56ncRBG8nEW8mY6Q"
 BASE_URL = "https://panthers.accbazaar.shop"
 HEADERS = {"X-API-Key": PANTHERS_API_KEY, "Content-Type": "application/json"}
 
+# Game Mapping Dictionary for Panther API Compatibility vs Clean UI Names
+GAME_MAP = {
+    "567slot": {"api": "567slot_game", "ui": "567slot"},
+    "MBMBet": {"api": "mbmbet_game", "ui": "MBMBet"},
+    "YonoSlot": {"api": "yonoslot_game", "ui": "YonoSlot"},
+    "789Jackpot": {"api": "789jackpot_game", "ui": "789Jackpot"},
+    "SpinCrush": {"api": "spincrush_game", "ui": "SpinCrush"},
+    "HiRummy": {"api": "hirummy_game", "ui": "HiRummy"},
+    "YonoGame": {"api": "Yonogame_game", "ui": "YonoGame"},
+    "IndSlot": {"api": "indslot_game", "ui": "IndSlot"},
+    "Bingo": {"api": "Bingo_game", "ui": "Bingo"},
+    "Maha": {"api": "maha_game", "ui": "Maha"}
+}
+
 live_stats = {
     "total_targeted": 0,
+    "total_thread_count": 0,
     "active_threads": 0,
     "success_otps": 0,
     "already_registered": 0,
@@ -43,13 +57,16 @@ live_stats = {
     "success_records": [],
     "recent_activity": [],
     "game_analytics": {},
-    "registration_summary": {},        # BUG 2 FIX: Added missing structural key
-    "activity_timeline": [],          # Added for Frontend Live Activity Timeline
-    "health_check": {                  # Added for Infrastructure Diagnostic Health
+    "registration_summary": {},
+    "activity_timeline": [],
+    "health_check": {
         "internet": "Connected",
         "4sim": "Connected",
         "panther": "Connected"
-    }
+    },
+    "realtime_active_threads": 0,
+    "realtime_already_logs": 0,
+    "cancel_failed_logs": 0
 }
 
 stats_lock = asyncio.Lock()
@@ -64,7 +81,6 @@ input_total_accounts = 0
 active_task_counter = 0
 global_service_id = "1929" 
 
-# Dynamic Game Analytics Helper Injection Module
 async def log_game_metric(game_name, status="success"):
     async with stats_lock:
         if game_name not in live_stats["game_analytics"]:
@@ -95,7 +111,7 @@ async def update_live_status(phone, status_text, balance_text=None, log_type="ac
                 if balance_text is not None:
                     num_entry["balance"] = balance_text
                 if target_game is not None:
-                    num_entry["current_game"] = target_game # BUG 1 FIX: Update current game context dynamic
+                    num_entry["current_game"] = target_game
                 if retry_idx is not None:
                     num_entry["retry"] = retry_idx
                 if progress_val is not None:
@@ -183,6 +199,8 @@ async def terminate_4sim_order_async(txn_id, otp_received, phone, force_cancel=F
 async def handle_already_number(phone, txn_id, otp_flag):
     current_task = asyncio.current_task()
     active_already_tasks.add(current_task)
+    async with stats_lock:
+        live_stats["realtime_already_logs"] += 1
     try:
         remaining_seconds = 140
         await update_live_status(phone, "Release Hold", log_type="already")
@@ -199,16 +217,20 @@ async def handle_already_number(phone, txn_id, otp_flag):
     finally:
         active_already_tasks.discard(current_task)
 
-async def run_game_step_async(phone, txn_id, app_name, used_otps, is_sub_game=False):
+async def run_game_step_async(phone, txn_id, game_key, used_otps, is_sub_game=False):
     max_attempts = 7 if is_sub_game else 26
     send_attempt = 1
     loop = asyncio.get_event_loop()
     
+    # Extract structural identifiers safely
+    api_name = GAME_MAP[game_key]["api"]
+    ui_name = GAME_MAP[game_key]["ui"]
+    
     while send_attempt <= 3:
         try:
-            await update_live_status(phone, "Sending OTP...", target_game=app_name, retry_idx=send_attempt, progress_val=15)
+            await update_live_status(phone, "Sending OTP...", target_game=ui_name, retry_idx=send_attempt, progress_val=15)
             response_raw = await loop.run_in_executor(None, lambda: requests.post(
-                f"{BASE_URL}/v1/register/send_otp", headers=HEADERS, json={"phone": phone, "app_name": str(app_name)}, verify=False, timeout=12
+                f"{BASE_URL}/v1/register/send_otp", headers=HEADERS, json={"phone": phone, "app_name": str(api_name)}, verify=False, timeout=12
             ))
             v_res = response_raw.json()
             error_msg = str(v_res.get("message", "")).lower()
@@ -238,27 +260,26 @@ async def run_game_step_async(phone, txn_id, app_name, used_otps, is_sub_game=Fa
                             await update_live_status(phone, "SUCCESS", balance_text=bal, progress_val=100)
                             used_otps.add(otp)
                             
-                            # BUG 2 FIX: Real-time update into registration summary node
                             async with stats_lock:
-                                if app_name not in live_stats["registration_summary"]:
-                                    live_stats["registration_summary"][app_name] = 0
-                                live_stats["registration_summary"][app_name] += 1
+                                if ui_name not in live_stats["registration_summary"]:
+                                    live_stats["registration_summary"][ui_name] = 0
+                                live_stats["registration_summary"][ui_name] += 1
                                 
-                            await log_game_metric(app_name, "success")
-                            await add_timeline_event(phone, f"Success Registered -> {app_name}")
+                            await log_game_metric(ui_name, "success")
+                            await add_timeline_event(phone, f"Success Registered -> {ui_name}")
                             return True, True
                         else:
                             await update_live_status(phone, "Wrong OTP", progress_val=90)
                             used_otps.add(otp)
-                            await log_game_metric(app_name, "failed")
+                            await log_game_metric(ui_name, "failed")
                             return False, True
                             
                 await update_live_status(phone, "Timeout", progress_val=0)
-                await log_game_metric(app_name, "failed")
+                await log_game_metric(ui_name, "failed")
                 return "timeout", otp_found_flag
                 
             if "already" in error_msg:
-                await log_game_metric(app_name, "already")
+                await log_game_metric(ui_name, "already")
                 return "already", False
                 
             send_attempt += 1
@@ -268,7 +289,7 @@ async def run_game_step_async(phone, txn_id, app_name, used_otps, is_sub_game=Fa
             await asyncio.sleep(4)
             
     await update_live_status(phone, "Failed", progress_val=0)
-    await log_game_metric(app_name, "failed")
+    await log_game_metric(ui_name, "failed")
     return "failed", False
 
 async def process_single_registration():
@@ -280,9 +301,13 @@ async def process_single_registration():
     phone, txn_id = None, None
     used_otps = set()
     otp_received_anywhere = False
+    
     success_chains_count = 0
     already_chains_count = 0
-    last_known_balance = "0 INR"
+    failed_or_timeout_count = 0
+    
+    registered_games_list = []
+    last_known_balance = "₹0"
     
     async with buy_lock:
         if stop_event.is_set() or success_buy_count >= input_total_accounts: return
@@ -299,14 +324,14 @@ async def process_single_registration():
             active_task_counter += 1
         except: return
 
-    # BUG 1 FIX: Injected fully qualified tracking schema with zero values cleanly
     async with stats_lock:
         live_stats["total_secured"] = success_buy_count
+        live_stats["realtime_active_threads"] += 1
         live_stats["recent_activity"].insert(0, {
             "phone": phone,
-            "current_game": "567slot_game",
+            "current_game": "567slot",
             "status": "Initializing...",
-            "balance": "0 INR",
+            "balance": "₹0",
             "retry": 1,
             "progress": 0,
             "thread_color": "🟢",
@@ -315,15 +340,21 @@ async def process_single_registration():
     
     await add_timeline_event(phone, "Acquired New Number from 4Sim")
 
-    main_res, m_otp_flag = await run_game_step_async(phone, txn_id, "567slot_game", used_otps, is_sub_game=False)
+    # Hit 567slot Engine Step
+    main_res, m_otp_flag = await run_game_step_async(phone, txn_id, "567slot", used_otps, is_sub_game=False)
     if m_otp_flag: otp_received_anywhere = True
     
     if main_res == "already":
-        async with stats_lock: live_stats["already_registered"] += 1
+        async with stats_lock: 
+            live_stats["already_registered"] += 1
+            live_stats["realtime_active_threads"] = max(0, live_stats["realtime_active_threads"] - 1)
         asyncio.create_task(handle_already_number(phone, txn_id, otp_received_anywhere))
         return
         
     elif main_res in ["timeout", "failed", False]:
+        async with stats_lock:
+            live_stats["cancel_failed_logs"] += 1
+            live_stats["realtime_active_threads"] = max(0, live_stats["realtime_active_threads"] - 1)
         await update_live_status(phone, "Released", log_type="cancel")
         c_status = await terminate_4sim_order_async(txn_id, otp_received_anywhere, phone)
         return
@@ -331,37 +362,42 @@ async def process_single_registration():
     elif main_res is True:
         async with stats_lock: live_stats["success_otps"] += 1
         success_chains_count += 1
+        registered_games_list.append("567slot")
         await asyncio.sleep(2) 
         
-        other_games = ["mbmbet_game", "yonoslot_game", "789jackpot_game", "spincrush_game", "hirummy_game", "Yonogame_game", "indslot_game"]
+        # Sequenced Execution Sub-Chains
+        other_games = ["YonoGame", "YonoSlot", "SpinCrush", "Bingo", "IndSlot", "MBMBet", "789Jackpot", "Maha"]
         for game in other_games:
             sub_res, s_otp_flag = await run_game_step_async(phone, txn_id, game, used_otps, is_sub_game=True)
             if s_otp_flag: otp_received_anywhere = True
             
             if sub_res is True:
                 success_chains_count += 1
+                registered_games_list.append(game)
                 async with stats_lock:
                     for item in live_stats["recent_activity"]:
                         if item["phone"] == phone and "INR" in str(item["balance"]):
-                            last_known_balance = item["balance"]
+                            last_known_balance = "₹" + str(item["balance"]).replace(" INR", "")
                 await asyncio.sleep(2)
             elif sub_res == "already":
                 already_chains_count += 1
+            else:
+                failed_or_timeout_count += 1
 
         fin_status = await terminate_4sim_order_async(txn_id, otp_received_anywhere, phone)
         
-        # BUG 3 FIX: Structural mapping cleanly aligned with frontend key architecture requirements
         async with stats_lock:
             live_stats["success_records"].insert(0, {
                 "phone": phone,
-                "games_registered": f"{success_chains_count} Games",
-                "already_registered": f"{already_chains_count} Games",
+                "games": registered_games_list,
                 "wallet": last_known_balance,
-                "status": "Fully Finished",
+                "success": success_chains_count,
+                "already": already_chains_count,
+                "failed": failed_or_timeout_count,
                 "time": datetime.now().strftime("%H:%M:%S")
             })
-            # Progress Engine Percent Calc
             live_stats["progress"] = int((success_buy_count / input_total_accounts) * 100)
+            live_stats["realtime_active_threads"] = max(0, live_stats["realtime_active_threads"] - 1)
             
         await update_live_status(phone, "Released", log_type="cancel")
 
@@ -383,6 +419,7 @@ async def core_engine_orchestrator(target, threads):
     
     async with stats_lock:
         live_stats["total_targeted"] = target
+        live_stats["total_thread_count"] = threads
         live_stats["active_threads"] = threads
         live_stats["pipeline_running"] = True
         live_stats["success_otps"] = 0
@@ -395,6 +432,9 @@ async def core_engine_orchestrator(target, threads):
         live_stats["game_analytics"] = {} 
         live_stats["registration_summary"] = {}
         live_stats["activity_timeline"] = []
+        live_stats["realtime_active_threads"] = 0
+        live_stats["realtime_already_logs"] = 0
+        live_stats["cancel_failed_logs"] = 0
     
     semaphore = asyncio.Semaphore(threads)
     workers = [asyncio.create_task(dynamic_pipeline_runner(semaphore)) for _ in range(threads)]
@@ -405,7 +445,6 @@ async def core_engine_orchestrator(target, threads):
             live_stats["active_threads"] = len([w for w in workers if not w.done()])
             live_stats["system_status"] = f"Running | Active Pipeline Loop"
             
-            # Real-time Engine ETA Engine Calculator
             elapsed = time.time() - start_time
             if success_buy_count > 0:
                 avg_time = elapsed / success_buy_count
@@ -428,6 +467,7 @@ async def core_engine_orchestrator(target, threads):
     async with stats_lock:
         live_stats["pipeline_running"] = False
         live_stats["active_threads"] = 0
+        live_stats["realtime_active_threads"] = 0
         live_stats["system_status"] = "Pipeline Finished / Idle"
         live_stats["eta"] = "---"
 
